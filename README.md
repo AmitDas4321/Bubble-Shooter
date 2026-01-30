@@ -110,8 +110,7 @@ http://localhost:5500
 ├─ FUNDING.yml
 ├─ screenshots/
 │  ├─ BubbleShooter_Banner.png
-│  ├─ gameplay.png
-│  └─ ui.png
+│  └─ gameplay.png
 └─ README.md
 ```
 
@@ -120,7 +119,6 @@ http://localhost:5500
 ## 🖼️ Screenshots
 
 <p align="center"><img src="screenshots/gameplay.png" width="820"></p>
-<p align="center"><img src="screenshots/ui.png" width="820"></p>
 
 ---
 
