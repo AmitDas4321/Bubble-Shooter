@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <title>Bubble Shooter</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            margin: 0;
+            background-color: #000;
+            color: #e3e3e3;
+            overflow: hidden;
+            font-family: 'Roboto', sans-serif;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: none;
+        }
+        canvas {
+            display: block;
+            touch-action: none;
+            position: relative;
+            z-index: 10;
+        }
+        #input_video {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            object-fit: cover;
+            transform: scaleX(-1);
+            filter: blur(10px) brightness(0.3);
+            opacity: 0.7;
+            z-index: 0;
+        }
+        .bubble-btn {
+            transition: all 0.2s ease-out;
+        }
+        .bubble-btn.active {
+            transform: scale(1.2);
+            box-shadow: 0 0 25px rgba(255, 255, 255, 0.3);
+            border: 2px solid white;
+        }
+        .hud-blur {
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+        }
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    </style>
+</head>
+<body>
+    <video id="input_video" playsinline></video>
+
+    <div id="game-container" class="relative w-full h-screen flex flex-col items-center justify-center overflow-hidden">
+        <canvas id="gameCanvas" class="absolute inset-0 cursor-crosshair"></canvas>
+
+        <div class="absolute top-4 left-4 md:top-8 md:left-8 pointer-events-none z-20">
+            <div class="bg-black/50 p-3 md:p-6 rounded-[24px] md:rounded-[32px] border border-white/10 shadow-2xl flex items-center gap-3 md:gap-5 min-w-[140px] md:min-w-[220px] hud-blur">
+                <div class="bg-white/5 p-2 md:p-3 rounded-xl border border-white/10 hidden sm:block">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#00ffd4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>
+                </div>
+                <div>
+                    <p class="text-[8px] md:text-[10px] text-gray-400 uppercase font-black tracking-[2px] md:tracking-[3px]">Score</p>
+                    <p id="scoreDisplay" class="text-2xl md:text-4xl font-black text-white tracking-tighter">0</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="absolute bottom-6 md:bottom-10 left-1/2 -translate-x-1/2 z-20 w-full px-4 flex justify-center">
+            <div id="colorPicker" class="bg-black/40 backdrop-blur-2xl px-4 py-3 md:px-8 md:py-5 rounded-[30px] md:rounded-[40px] border border-white/10 shadow-2xl flex items-center gap-3 md:gap-6 max-w-full overflow-x-auto no-scrollbar">
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreDisplay = document.getElementById('scoreDisplay');
+        const colorPicker = document.getElementById('colorPicker');
+        const videoElement = document.getElementById('input_video');
+
+        const FRICTION = 0.998;
+        let BUBBLE_RADIUS = 24;
+        let ROW_HEIGHT = 0;
+        let GRID_COLS = 14;
+        const GRID_ROWS = 10;
+        let SLINGSHOT_BOTTOM_OFFSET = 160;
+        let MAX_DRAG_DIST = 140;
+
+        const COLOR_CONFIG = {
+            red:    { hex: '#ef5350', points: 100 },
+            blue:   { hex: '#42a5f5', points: 150 },
+            green:  { hex: '#66bb6a', points: 200 },
+            yellow: { hex: '#ffee58', points: 250 },
+            purple: { hex: '#ab47bc', points: 300 },
+            orange: { hex: '#ffa726', points: 500 }
+        };
+        const COLOR_KEYS = Object.keys(COLOR_CONFIG);
+
+        let score = 0;
+        let selectedColor = 'red';
+        let availableColors = [...COLOR_KEYS];
+        let bubbles = [];
+        let particles = [];
+        let ballPos = { x: 0, y: 0 };
+        let ballVel = { x: 0, y: 0 };
+        let anchorPos = { x: 0, y: 0 };
+        let isDragging = false;
+        let isFlying = false;
+        let flightStartTime = 0;
+
+        let handPos = { x: 0, y: 0 };
+        let handActive = false;
+        let isPinching = false;
+        let lastPinchState = false;
+        let lastHandResults = null;
+
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.6,
+            minTrackingConfidence: 0.6
+        });
+
+        const handleEnd = () => {
+            if (!isDragging) return;
+            isDragging = false;
+            const dx = anchorPos.x - ballPos.x;
+            const dy = anchorPos.y - ballPos.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            
+            if (dist > 25) {
+                isFlying = true;
+                flightStartTime = performance.now();
+                const power = Math.min(dist / MAX_DRAG_DIST, 1.0);
+                const launchSpeed = 12 + (power * 38); 
+                const angle = Math.atan2(dy, dx);
+                ballVel = { 
+                    x: Math.cos(angle) * launchSpeed, 
+                    y: Math.sin(angle) * launchSpeed 
+                };
+            } else { 
+                ballPos = { ...anchorPos }; 
+            }
+        };
+
+        hands.onResults((results) => {
+            lastHandResults = results;
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                handActive = true;
+                const landmarks = results.multiHandLandmarks[0];
+                const thumb = landmarks[4];
+                const index = landmarks[8];
+                
+                handPos = {
+                    x: (1 - (thumb.x + index.x) / 2) * canvas.width,
+                    y: ((thumb.y + index.y) / 2) * canvas.height
+                };
+
+                const dx = thumb.x - index.x;
+                const dy = thumb.y - index.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                isPinching = dist < 0.10;
+
+                if (isPinching && !lastPinchState) {
+                    const grabDist = Math.sqrt(Math.pow(handPos.x - ballPos.x, 2) + Math.pow(handPos.y - ballPos.y, 2));
+                    if (grabDist < BUBBLE_RADIUS * 5 && !isFlying) {
+                        isDragging = true;
+                    }
+                } else if (!isPinching && lastPinchState) {
+                    if (isDragging) handleEnd();
+                }
+
+                if (isDragging) {
+                    const pullDx = handPos.x - anchorPos.x;
+                    const pullDy = handPos.y - anchorPos.y;
+                    const pullDist = Math.sqrt(pullDx * pullDx + pullDy * pullDy);
+                    if (pullDist > MAX_DRAG_DIST) {
+                        const angle = Math.atan2(pullDy, pullDx);
+                        ballPos = {
+                            x: anchorPos.x + Math.cos(angle) * MAX_DRAG_DIST,
+                            y: anchorPos.y + Math.sin(angle) * MAX_DRAG_DIST
+                        };
+                    } else {
+                        ballPos = handPos;
+                    }
+                }
+                lastPinchState = isPinching;
+            } else {
+                handActive = false;
+                if (isDragging) {
+                    handleEnd();
+                }
+                lastPinchState = false;
+            }
+        });
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 640,
+            height: 480
+        });
+        camera.start();
+
+        const adjustColor = (color, amount) => {
+            const hex = color.replace('#', '');
+            const r = Math.max(0, Math.min(255, parseInt(hex.substring(0, 2), 16) + amount));
+            const g = Math.max(0, Math.min(255, parseInt(hex.substring(2, 4), 16) + amount));
+            const b = Math.max(0, Math.min(255, parseInt(hex.substring(4, 6), 16) + amount));
+            const toHex = (c) => c.toString(16).padStart(2, '0');
+            return "#" + toHex(r) + toHex(g) + toHex(b);
+        };
+
+        const getBubblePos = (row, col) => {
+            const xOffset = (canvas.width - (GRID_COLS * BUBBLE_RADIUS * 2)) / 2 + BUBBLE_RADIUS;
+            const isOdd = row % 2 !== 0;
+            const x = xOffset + col * (BUBBLE_RADIUS * 2) + (isOdd ? BUBBLE_RADIUS : 0);
+            const y = BUBBLE_RADIUS + row * ROW_HEIGHT + 20;
+            return { x, y };
+        };
+
+        const renderPicker = () => {
+            colorPicker.innerHTML = '';
+            availableColors.forEach(color => {
+                const config = COLOR_CONFIG[color];
+                const btn = document.createElement('button');
+                const size = window.innerWidth < 640 ? 'w-10 h-10' : 'w-16 h-16';
+                btn.className = `bubble-btn relative ${size} rounded-full flex-shrink-0 ${selectedColor === color ? 'active' : 'opacity-60'}`;
+                btn.style.background = `radial-gradient(circle at 30% 30%, ${config.hex}, ${adjustColor(config.hex, -60)})`;
+                btn.onclick = () => { selectedColor = color; renderPicker(); };
+                colorPicker.appendChild(btn);
+            });
+        };
+
+        const updateAvailableColors = () => {
+            const activeColors = new Set();
+            bubbles.forEach(b => { if (b.active) activeColors.add(b.color); });
+            availableColors = activeColors.size > 0 ? Array.from(activeColors) : [...COLOR_KEYS];
+            if (!activeColors.has(selectedColor)) selectedColor = availableColors[0];
+            renderPicker();
+        };
+
+        const initGrid = () => {
+            bubbles = [];
+            for (let r = 0; r < 5; r++) {
+                const cols = r % 2 !== 0 ? GRID_COLS - 1 : GRID_COLS;
+                for (let c = 0; c < cols; c++) {
+                    const { x, y } = getBubblePos(r, c);
+                    bubbles.push({
+                        id: `${r}-${c}`, row: r, col: c, x, y,
+                        color: COLOR_KEYS[Math.floor(Math.random() * COLOR_KEYS.length)],
+                        active: true
+                    });
+                }
+            }
+            updateAvailableColors();
+        };
+
+        const resize = () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            
+            const isMobile = canvas.width < 768;
+            BUBBLE_RADIUS = isMobile ? Math.floor(canvas.width / 16) : 24;
+            GRID_COLS = Math.floor(canvas.width / (BUBBLE_RADIUS * 2.1));
+            ROW_HEIGHT = BUBBLE_RADIUS * 1.73;
+            SLINGSHOT_BOTTOM_OFFSET = isMobile ? 120 : 180;
+            MAX_DRAG_DIST = isMobile ? 110 : 160;
+
+            anchorPos = { x: canvas.width / 2, y: canvas.height - SLINGSHOT_BOTTOM_OFFSET };
+            if (!isFlying && !isDragging) ballPos = { ...anchorPos };
+            initGrid();
+            renderPicker();
+        };
+
+        window.addEventListener('resize', resize);
+        resize();
+
+        const drawBubble = (x, y, radius, colorKey) => {
+            const baseColor = COLOR_CONFIG[colorKey].hex;
+            const grad = ctx.createRadialGradient(x - radius * 0.3, y - radius * 0.3, radius * 0.1, x, y, radius);
+            grad.addColorStop(0, '#ffffff');
+            grad.addColorStop(0.2, baseColor);
+            grad.addColorStop(1, adjustColor(baseColor, -70));
+            ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fillStyle = grad; ctx.fill();
+            ctx.strokeStyle = adjustColor(baseColor, -90); ctx.lineWidth = 1; ctx.stroke();
+        };
+
+        const loop = () => {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            if (lastHandResults && lastHandResults.multiHandLandmarks) {
+                for (const landmarks of lastHandResults.multiHandLandmarks) {
+                    const canvasLandmarks = landmarks.map(lm => ({
+                        ...lm, x: (1 - lm.x) * canvas.width, y: lm.y * canvas.height
+                    }));
+                    ctx.save();
+                    ctx.shadowBlur = 15;
+                    ctx.shadowColor = isPinching ? '#00ffd4' : '#ffffff44';
+                    
+                    drawConnectors(ctx, canvasLandmarks, HAND_CONNECTIONS, {
+                        color: isPinching ? '#00ffd4' : 'rgba(255, 255, 255, 0.4)', 
+                        lineWidth: 6 
+                    });
+                    
+                    [4, 8, 12, 16, 20].forEach(tipIdx => {
+                        const tip = canvasLandmarks[tipIdx];
+                        ctx.beginPath(); ctx.arc(tip.x, tip.y, 10, 0, Math.PI * 2);
+                        ctx.fillStyle = tipIdx === 4 || tipIdx === 8 ? '#00ffd4' : 'rgba(255, 255, 255, 0.4)';
+                        ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+                    });
+                    ctx.restore();
+                }
+            }
+
+            if (isFlying) {
+                if (performance.now() - flightStartTime > 5000) {
+                    isFlying = false; ballPos = { ...anchorPos };
+                } else {
+                    const steps = 10;
+                    let collision = false;
+                    for (let i = 0; i < steps; i++) {
+                        ballPos.x += ballVel.x / steps; ballPos.y += ballVel.y / steps;
+                        if (ballPos.x < BUBBLE_RADIUS || ballPos.x > canvas.width - BUBBLE_RADIUS) {
+                            ballVel.x *= -1;
+                            ballPos.x = Math.max(BUBBLE_RADIUS, Math.min(canvas.width - BUBBLE_RADIUS, ballPos.x));
+                        }
+                        if (ballPos.y < BUBBLE_RADIUS) { collision = true; break; }
+                        for (const b of bubbles) {
+                            if (!b.active) continue;
+                            if (Math.sqrt((ballPos.x-b.x)**2+(ballPos.y-b.y)**2) < BUBBLE_RADIUS*1.65) { collision = true; break; }
+                        }
+                        if (collision) break;
+                    }
+                    ballVel.x *= FRICTION; ballVel.y *= FRICTION;
+                    if (collision) {
+                        isFlying = false;
+                        let bestDist = Infinity, bR=0, bC=0, bX=0, bY=0;
+                        for(let r=0; r<GRID_ROWS+5; r++){
+                            const cols = r%2!==0?GRID_COLS-1:GRID_COLS;
+                            for(let c=0; c<cols; c++){
+                                const {x,y} = getBubblePos(r,c);
+                                if(bubbles.some(b=>b.active && b.row===r && b.col===c)) continue;
+                                const d = Math.sqrt((ballPos.x-x)**2+(ballPos.y-y)**2);
+                                if(d<bestDist){ bestDist=d; bR=r; bC=c; bX=x; bY=y; }
+                            }
+                        }
+                        const nb = { id: Date.now(), row: bR, col: bC, x: bX, y: bY, color: selectedColor, active: true };
+                        bubbles.push(nb);
+                        
+                        const toCheck = [nb]; const visited = new Set(); const matches = [];
+                        while(toCheck.length > 0){
+                            const curr = toCheck.pop(); if(visited.has(curr.id)) continue; visited.add(curr.id);
+                            if(curr.color === selectedColor){
+                                matches.push(curr);
+                                const neighbors = bubbles.filter(b=>b.active && !visited.has(b.id) && (Math.abs(b.row-curr.row)<=1 && Math.abs(b.col-curr.col)<=1));
+                                toCheck.push(...neighbors);
+                            }
+                        }
+                        if(matches.length >= 3){
+                            matches.forEach(b => {
+                                b.active = false;
+                                score += COLOR_CONFIG[b.color].points;
+                                for(let j=0; j<12; j++) particles.push({x:b.x, y:b.y, vx:(Math.random()-0.5)*10, vy:(Math.random()-0.5)*10, life:1.0, color:COLOR_CONFIG[b.color].hex});
+                            });
+                            scoreDisplay.textContent = score.toLocaleString();
+                        }
+                        updateAvailableColors();
+                        ballPos = { ...anchorPos };
+                    }
+                }
+            } else if (!isDragging) {
+                ballPos.x += (anchorPos.x - ballPos.x) * 0.15; ballPos.y += (anchorPos.y - ballPos.y) * 0.15;
+            }
+
+            bubbles.forEach(b => b.active && drawBubble(b.x, b.y, BUBBLE_RADIUS - 1, b.color));
+
+            if (handActive) {
+                ctx.beginPath(); ctx.arc(handPos.x, handPos.y, isPinching ? 25 : 45, 0, Math.PI * 2);
+                ctx.strokeStyle = isPinching ? '#00ffd4' : '#fff'; ctx.lineWidth = 3; ctx.setLineDash([5, 5]); ctx.stroke(); ctx.setLineDash([]);
+            }
+
+            if (isDragging) {
+                ctx.beginPath(); ctx.setLineDash([8, 12]); ctx.moveTo(anchorPos.x, anchorPos.y);
+                const dx = anchorPos.x - ballPos.x; const dy = anchorPos.y - ballPos.y;
+                ctx.lineTo(anchorPos.x + dx * 5, anchorPos.y + dy * 5);
+                ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.lineWidth = 2; ctx.stroke(); ctx.setLineDash([]);
+            }
+
+            const bandTarget = isFlying ? anchorPos : ballPos;
+            const bandCol = isDragging ? '#00ffd4' : 'rgba(255,255,255,0.35)';
+            ctx.lineCap = 'round';            
+            ctx.beginPath(); 
+            ctx.moveTo(anchorPos.x - 30, anchorPos.y); 
+            ctx.lineTo(bandTarget.x, bandTarget.y); 
+            ctx.lineWidth = 6; ctx.strokeStyle = bandCol; ctx.stroke();
+            drawBubble(ballPos.x, ballPos.y, BUBBLE_RADIUS, selectedColor);
+            ctx.beginPath(); 
+            ctx.moveTo(bandTarget.x, bandTarget.y); 
+            ctx.lineTo(anchorPos.x + 30, anchorPos.y); 
+            ctx.stroke();
+            ctx.beginPath(); 
+            ctx.moveTo(anchorPos.x, canvas.height); 
+            ctx.lineTo(anchorPos.x, anchorPos.y + 40);
+            ctx.lineTo(anchorPos.x - 35, anchorPos.y); 
+            ctx.moveTo(anchorPos.x, anchorPos.y + 40); 
+            ctx.lineTo(anchorPos.x + 35, anchorPos.y);
+            ctx.lineWidth = 12; ctx.lineCap = 'round'; ctx.strokeStyle = '#ffffff22'; ctx.stroke();
+            ctx.lineWidth = 2; ctx.strokeStyle = '#ffffff44'; ctx.stroke();
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const p = particles[i]; p.x += p.vx; p.y += p.vy; p.life -= 0.04;
+                if (p.life <= 0) particles.splice(i, 1);
+                else { 
+                    ctx.globalAlpha = p.life; 
+                    ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI*2); 
+                    ctx.fillStyle = p.color; ctx.fill(); 
+                    ctx.globalAlpha = 1; 
+                }
+            }
+            requestAnimationFrame(loop);
+        };
+
+        loop();
+    </script>
+</body>
+</html>
