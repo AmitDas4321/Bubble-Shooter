@@ -107,6 +107,7 @@ http://localhost:5500
 /
 ├─ index.html
 ├─ LICENSE
+├─ FUNDING.yml
 ├─ screenshots/
 │  ├─ BubbleShooter_Banner.png
 │  ├─ gameplay.png
